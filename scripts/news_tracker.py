@@ -4,7 +4,7 @@ Pipeline:
   1. Fetch the last 24h of Google News RSS results for each brand.
   2. Ask Claude to summarize each brand's headlines in 3-5 bullets.
   3. Build an HTML email digest.
-  4. Drop it into the configured Gmail account's Drafts folder
+  4. Send it via Gmail SMTP to the recipient
      (or print to stdout when --dry-run is passed).
 
 Run locally:
@@ -16,22 +16,20 @@ Run in CI: provide all the env vars listed in README.md.
 from __future__ import annotations
 
 import argparse
-import base64
 import datetime as dt
 import html
 import os
+import smtplib
 import sys
 import time
 from dataclasses import dataclass
+from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Iterable
 from urllib.parse import quote_plus
 
 import feedparser
 from anthropic import Anthropic
-from google.auth.transport.requests import Request as GoogleAuthRequest
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build as build_gmail
 
 
 BRANDS: list[str] = [
@@ -44,7 +42,8 @@ BRANDS: list[str] = [
 
 MAX_ARTICLES_PER_BRAND = 15
 CLAUDE_MODEL = "claude-sonnet-4-6"
-GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.compose"]
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465
 
 SYSTEM_PROMPT = (
     "You are a brand-news analyst covering the athleisure and activewear industry. "
@@ -157,36 +156,21 @@ def render_text(today: dt.date, sections: list[tuple[str, str, list[Article]]]) 
     return "\n".join(out)
 
 
-def gmail_credentials_from_env() -> Credentials:
-    client_id = os.environ["GMAIL_CLIENT_ID"]
-    client_secret = os.environ["GMAIL_CLIENT_SECRET"]
-    refresh_token = os.environ["GMAIL_REFRESH_TOKEN"]
-    creds = Credentials(
-        token=None,
-        refresh_token=refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=client_id,
-        client_secret=client_secret,
-        scopes=GMAIL_SCOPES,
-    )
-    creds.refresh(GoogleAuthRequest())
-    return creds
+def send_email(subject: str, html_body: str, text_body: str, to_addr: str) -> None:
+    """Send a multipart text+html email via Gmail SMTP."""
+    sender = os.environ["GMAIL_USER"]
+    app_password = os.environ["GMAIL_APP_PASSWORD"]
 
-
-def create_gmail_draft(subject: str, html_body: str, text_body: str, to_addr: str) -> str:
-    creds = gmail_credentials_from_env()
-    service = build_gmail("gmail", "v1", credentials=creds, cache_discovery=False)
-
-    msg = MIMEText(html_body, "html", "utf-8")
-    msg["To"] = to_addr
-    msg["From"] = to_addr
+    msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
-    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+    msg["From"] = sender
+    msg["To"] = to_addr
+    msg.attach(MIMEText(text_body, "plain", "utf-8"))
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    draft = service.users().drafts().create(
-        userId="me", body={"message": {"raw": raw}}
-    ).execute()
-    return draft["id"]
+    with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
+        smtp.login(sender, app_password)
+        smtp.send_message(msg)
 
 
 def build_digest(client: Anthropic | None, brands: Iterable[str]) -> list[tuple[str, str, list[Article]]]:
@@ -236,8 +220,8 @@ def main() -> int:
         return 0
 
     to_addr = os.environ["RECIPIENT_EMAIL"]
-    draft_id = create_gmail_draft(subject, html_body, text_body, to_addr)
-    print(f"Created Gmail draft {draft_id} for {to_addr}", file=sys.stderr)
+    send_email(subject, html_body, text_body, to_addr)
+    print(f"Sent digest to {to_addr}", file=sys.stderr)
     return 0
 
 

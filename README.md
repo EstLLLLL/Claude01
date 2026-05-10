@@ -1,6 +1,6 @@
 # Yoga Brand News Tracker
 
-A daily news digest for athleisure / yoga brands — **Halara, CRZ Yoga, Vuori, Alo Yoga, Lululemon** — that runs on GitHub Actions, summarizes headlines with Claude, and lands the result in your Gmail Drafts folder each morning.
+A daily news digest for athleisure / yoga brands — **Halara, CRZ Yoga, Vuori, Alo Yoga, Lululemon** — that runs on GitHub Actions, summarizes headlines with Claude, and emails the result to your inbox each morning.
 
 ## How it works
 
@@ -9,56 +9,45 @@ GitHub Actions cron (13:00 UTC daily)
   ──► scripts/news_tracker.py
         ├─ Google News RSS  (last 24h, per brand)
         ├─ Anthropic Claude (per-brand 3–5 bullet summary)
-        └─ Gmail API        (creates a draft in your inbox)
+        └─ Gmail SMTP       (sends the digest email)
 ```
 
-## Setup (one time, ~10 minutes)
+## Setup (one time, ~5 minutes)
 
 ### 1. Get a Claude API key
 
-[console.anthropic.com](https://console.anthropic.com/) → **API Keys** → Create. Save it for step 4.
+[console.anthropic.com](https://console.anthropic.com/) → **API Keys** → Create. Save it for step 3.
 
-### 2. Set up Gmail API access
+### 2. Create a Gmail App Password
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com/), create a project.
-2. **APIs & Services → Library →** enable **Gmail API**.
-3. **APIs & Services → OAuth consent screen →** External, add yourself as a test user.
-4. **APIs & Services → Credentials →** Create Credentials → **OAuth client ID** → **Desktop app**. Download the JSON.
-5. Save the JSON as `credentials.json` at the repo root (it's gitignored).
+You need 2-Step Verification turned on first (Google Account → Security → 2-Step Verification).
 
-### 3. Mint a refresh token
+Then go to [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords):
 
-```bash
-pip install -r requirements.txt
-python scripts/auth_setup.py
-```
+- App name: `news-tracker` (anything works)
+- Click **Create**. Google shows a 16-character password — copy it (spaces are fine, they're stripped on use).
 
-A browser window opens — sign in with the Gmail account that should receive the digests. The script prints three values: `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`. Copy them.
+### 3. Add GitHub secrets
 
-Delete `credentials.json` afterwards.
-
-### 4. Add GitHub secrets
-
-Repo → **Settings → Secrets and variables → Actions → New repository secret**. Add five secrets:
+Repo → **Settings → Secrets and variables → Actions → New repository secret**. Add four secrets:
 
 | Name | Value |
 |---|---|
 | `ANTHROPIC_API_KEY` | from step 1 |
-| `GMAIL_CLIENT_ID` | from step 3 |
-| `GMAIL_CLIENT_SECRET` | from step 3 |
-| `GMAIL_REFRESH_TOKEN` | from step 3 |
-| `RECIPIENT_EMAIL` | the Gmail address you authenticated with |
+| `GMAIL_USER` | the Gmail address that will send the digest, e.g. `you@gmail.com` |
+| `GMAIL_APP_PASSWORD` | the 16-character app password from step 2 |
+| `RECIPIENT_EMAIL` | where to deliver the digest (often the same as `GMAIL_USER`) |
 
-### 5. Run it
+### 4. Run it
 
 - **Manually**: repo → **Actions → Daily Brand News → Run workflow**.
-- **Scheduled**: it runs daily at 13:00 UTC. Edit the cron in `.github/workflows/daily-news.yml` to change the time.
+- **Scheduled**: it runs daily at 13:00 UTC (≈ 21:00 Beijing / 6am PT / 9am ET). Edit the cron in `.github/workflows/daily-news.yml` to change the time.
 
-Drafts appear in your Gmail Drafts folder titled `📰 Brand News Digest — YYYY-MM-DD`.
+The digest arrives titled `📰 Brand News Digest — YYYY-MM-DD`.
 
 ## Local dry-run
 
-Print the digest to your terminal without touching Gmail:
+Print the digest to your terminal without sending email:
 
 ```bash
 # With Claude summarization:
@@ -79,7 +68,6 @@ python scripts/news_tracker.py --dry-run
 
 | Path | Purpose |
 |---|---|
-| `scripts/news_tracker.py` | The main pipeline (fetch → summarize → draft) |
-| `scripts/auth_setup.py` | One-time helper to mint the Gmail refresh token |
+| `scripts/news_tracker.py` | The main pipeline (fetch → summarize → email) |
 | `.github/workflows/daily-news.yml` | Daily cron + manual trigger |
-| `requirements.txt` | Python deps |
+| `requirements.txt` | Python deps (`feedparser`, `anthropic`) |
