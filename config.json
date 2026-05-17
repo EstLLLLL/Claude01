@@ -6,7 +6,11 @@
     "Gymshark",
     "SHEIN"
   ],
-  "max_items_per_brand": 8,
+  "max_items_per_brand": 0,
+  "time_window": "1d",
   "language": "en-US",
-  "country": "US"
+  "country": "US",
+  "summary_language": "Chinese",
+  "deepseek_model": "deepseek-chat",
+  "deepseek_base_url": "https://api.deepseek.com"
 }
