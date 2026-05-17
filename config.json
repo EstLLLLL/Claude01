@@ -1,15 +1,24 @@
 {
   "brands": [
-    "Halara",
-    "Lululemon",
-    "Alo Yoga",
-    "Gymshark",
-    "SHEIN"
+    { "name": "OpenAI", "query": "OpenAI", "match": "openai" },
+    { "name": "Anthropic", "query": "Anthropic", "match": "anthropic" },
+    { "name": "xAI (Grok)", "query": "xAI", "match": "xai" },
+    { "name": "Google Gemini", "query": "Google Gemini", "match": "gemini" },
+    { "name": "Meta AI", "query": "Meta AI", "match": "meta ai" },
+    { "name": "Mistral AI", "query": "Mistral AI", "match": "mistral" },
+    { "name": "DeepSeek", "query": "DeepSeek", "match": "deepseek" },
+    { "name": "字节跳动 ByteDance", "query": "ByteDance", "match": "bytedance" },
+    { "name": "MiniMax", "query": "MiniMax", "match": "minimax" },
+    { "name": "智谱 Zhipu AI", "query": "Zhipu AI", "match": "zhipu" },
+    { "name": "月之暗面 Moonshot (Kimi)", "query": "Moonshot AI Kimi", "match": "moonshot" },
+    { "name": "阿里通义千问 Qwen", "query": "Alibaba Qwen", "match": "qwen" }
   ],
   "max_items_per_brand": 0,
   "time_window": "1d",
-  "language": "en-US",
-  "country": "US",
+  "locales": [
+    { "language": "zh-CN", "country": "CN" },
+    { "language": "en-US", "country": "US" }
+  ],
   "summary_language": "Chinese",
   "deepseek_model": "deepseek-chat",
   "deepseek_base_url": "https://api.deepseek.com"

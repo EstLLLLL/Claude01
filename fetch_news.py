@@ -35,8 +35,8 @@ def load_config():
         return json.load(fh)
 
 
-def build_url(brand, language, country, window):
-    query = f'"{brand}" when:{window}'
+def build_url(query, language, country, window):
+    query = f"{query} when:{window}"
     params = {
         "q": query,
         "hl": language,
@@ -239,7 +239,7 @@ def deepseek_summarize(title, article_text, summary_language, model, base_url):
 
 
 def build_markdown(date_str, results, summarized):
-    lines = [f"# Clothing Brand News - {date_str}", ""]
+    lines = [f"# AI Company News - {date_str}", ""]
     total = sum(len(v) for v in results.values())
     note = "with DeepSeek summaries" if summarized else "no summaries (DEEPSEEK_API_KEY unset)"
     lines.append(
@@ -274,9 +274,10 @@ def main():
         return 1
 
     limit = int(config.get("max_items_per_brand", 0))
-    language = config.get("language", "en-US")
-    country = config.get("country", "US")
     window = str(config.get("time_window", "1d"))
+    locales = config.get("locales") or [
+        {"language": config.get("language", "en-US"), "country": config.get("country", "US")}
+    ]
     summary_language = config.get("summary_language", "Chinese")
     model = config.get("deepseek_model", "deepseek-chat")
     base_url = config.get("deepseek_base_url", "https://api.deepseek.com")
@@ -285,25 +286,43 @@ def main():
         print("[warn] DEEPSEEK_API_KEY not set; listing items without summaries.", file=sys.stderr)
 
     results = {}
-    for brand in brands:
-        try:
-            raw = fetch_feed(build_url(brand, language, country, window))
-            items = parse_items(raw, limit)
-        except Exception as exc:  # one brand failing shouldn't kill the run
-            print(f"[warn] {brand}: feed failed: {exc}", file=sys.stderr)
-            results[brand] = []
-            continue
+    for entry in brands:
+        if isinstance(entry, str):
+            name, query, match = entry, entry, entry.lower()
+        else:
+            name = entry["name"]
+            query = entry.get("query", name)
+            match = entry.get("match", query).lower()
+
+        merged = []
+        seen = set()
+        for loc in locales:
+            try:
+                raw = fetch_feed(
+                    build_url(query, loc["language"], loc["country"], window)
+                )
+                for it in parse_items(raw, 0):
+                    key = it["title"].strip().lower()
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(it)
+            except Exception as exc:  # one locale failing shouldn't kill the run
+                print(f"[warn] {name} [{loc.get('language')}]: feed failed: {exc}", file=sys.stderr)
+
+        if limit > 0:
+            merged = merged[:limit]
 
         kept = []
         dropped = 0
-        for it in items:
+        for it in merged:
             article_text = ""
             try:
                 article_text = fetch_article_text(it["link"])
             except Exception as exc:
-                print(f"[warn] {brand}: article fetch failed: {exc}", file=sys.stderr)
+                print(f"[warn] {name}: article fetch failed: {exc}", file=sys.stderr)
 
-            if not is_relevant(brand, it["title"], article_text):
+            if not is_relevant(match, it["title"], article_text):
                 dropped += 1
                 continue
 
@@ -312,12 +331,12 @@ def main():
                     it["title"], article_text, summary_language, model, base_url
                 )
             except Exception as exc:
-                print(f"[warn] {brand}: summarize failed: {exc}", file=sys.stderr)
+                print(f"[warn] {name}: summarize failed: {exc}", file=sys.stderr)
                 it["summary"] = None
             kept.append(it)
 
-        results[brand] = kept
-        print(f"[ok] {brand}: {len(kept)} item(s) kept, {dropped} dropped as off-topic")
+        results[name] = kept
+        print(f"[ok] {name}: {len(kept)} kept, {dropped} dropped (from {len(merged)} merged)")
 
     date_str = datetime.date.today().isoformat()
     os.makedirs(NEWS_DIR, exist_ok=True)
