@@ -270,7 +270,49 @@ def build_markdown(date_str, results, summarized):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def main():
+def build_issue_body(date_str, results, repo, issue_items):
+    """Condensed digest for a GitHub Issue notification."""
+    file_url = f"https://github.com/{repo}/blob/main/news/{date_str}.md" if repo else ""
+    lines = [f"AI 公司新闻日报 · {date_str}", ""]
+    if file_url:
+        lines.append(f"完整摘要：{file_url}")
+        lines.append("")
+    for brand, items in results.items():
+        if not items:
+            continue
+        lines.append(f"### {brand}（{len(items)} 条）")
+        for it in items[:issue_items]:
+            lines.append(f"- [{it['title']}]({it['link']})")
+            summary = it.get("summary")
+            if summary:
+                lines.append(f"  {summary[:120]}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def create_github_issue(title, body):
+    """Open an Issue using the Actions-provided GITHUB_TOKEN. No-op when
+    the token/repository is unavailable (e.g. local runs)."""
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if not token or not repo:
+        print("[warn] GITHUB_TOKEN/REPOSITORY unset; skipping Issue.", file=sys.stderr)
+        return
+    payload = json.dumps({"title": title, "body": body}).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{repo}/issues",
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=30) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    print(f"Opened issue #{data.get('number')}: {data.get('html_url')}")
     config = load_config()
     brands = config.get("brands", [])
     if not brands:
@@ -374,6 +416,19 @@ def main():
     with open(out_path, "w", encoding="utf-8") as fh:
         fh.write(build_markdown(date_str, results, summarized=bool(DEEPSEEK_API_KEY)))
     print(f"Wrote {out_path}")
+
+    if config.get("create_issue", True) and sum(len(v) for v in results.values()):
+        try:
+            body = build_issue_body(
+                date_str,
+                results,
+                os.environ.get("GITHUB_REPOSITORY", ""),
+                int(config.get("issue_items_per_brand", 5)),
+            )
+            create_github_issue(f"AI 公司新闻日报 · {date_str}", body)
+        except Exception as exc:
+            print(f"[warn] issue creation failed: {exc}", file=sys.stderr)
+
     return 0
 
 
