@@ -1,9 +1,11 @@
-# Claude01 — Daily Brand News
+# Claude01 — Daily AI Company News
 
-Fetches daily news for clothing brands (Halara and peers) from Google News
-RSS, fetches each article, summarizes it with the DeepSeek API, and writes
-a Markdown digest to `news/<date>.md`. Every item found that day is listed
-(no truncation), each with a short summary.
+Fetches daily news for AI companies (OpenAI, Anthropic, xAI, Google
+Gemini, DeepSeek, ByteDance, MiniMax, Zhipu, Moonshot, Qwen, …) from
+Google News RSS in both Chinese and English, fetches each article,
+summarizes it with the DeepSeek API, and writes a Markdown digest to
+`news/<date>.md`. Every relevant item found that day is listed (no
+truncation), each with a short Chinese summary.
 
 ## Usage
 
@@ -21,11 +23,10 @@ Edit `config.json`:
 
 | Key | Meaning |
 | --- | --- |
-| `brands` | List of brand names to track (add/remove freely) |
-| `max_items_per_brand` | Items kept per brand; `0` = no limit (list all) |
+| `brands` | Companies to track. Each entry is `{ "name": display, "query": google-news search, "match": relevance keyword }` (a plain string also works) |
+| `max_items_per_brand` | Items kept per company; `0` = no limit (list all) |
 | `time_window` | Google News recency, e.g. `1d`, `7d` |
-| `language` | Google News `hl`, e.g. `en-US` |
-| `country` | Google News `gl`/`ceid`, e.g. `US` |
+| `locales` | List of `{ "language": hl, "country": gl }`; results from all locales are merged and de-duplicated by title |
 | `summary_language` | Language for summaries, e.g. `Chinese` |
 | `deepseek_model` | DeepSeek model, e.g. `deepseek-chat` |
 | `deepseek_base_url` | DeepSeek API base, default `https://api.deepseek.com` |
