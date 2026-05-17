@@ -10,6 +10,7 @@ Set the DEEPSEEK_API_KEY environment variable to enable summaries. Without
 it the digest still lists every item, just without summaries.
 """
 
+import concurrent.futures
 import datetime
 import html
 import json
@@ -281,62 +282,82 @@ def main():
     summary_language = config.get("summary_language", "Chinese")
     model = config.get("deepseek_model", "deepseek-chat")
     base_url = config.get("deepseek_base_url", "https://api.deepseek.com")
+    concurrency = max(1, int(config.get("concurrency", 8)))
 
     if not DEEPSEEK_API_KEY:
         print("[warn] DEEPSEEK_API_KEY not set; listing items without summaries.", file=sys.stderr)
 
-    results = {}
+    companies = []
     for entry in brands:
         if isinstance(entry, str):
-            name, query, match = entry, entry, entry.lower()
+            companies.append({"name": entry, "query": entry, "match": entry.lower()})
         else:
-            name = entry["name"]
-            query = entry.get("query", name)
-            match = entry.get("match", query).lower()
+            q = entry.get("query", entry["name"])
+            companies.append(
+                {
+                    "name": entry["name"],
+                    "query": q,
+                    "match": entry.get("match", q).lower(),
+                }
+            )
 
-        merged = []
-        seen = set()
-        for loc in locales:
-            try:
-                raw = fetch_feed(
-                    build_url(query, loc["language"], loc["country"], window)
-                )
-                for it in parse_items(raw, 0):
-                    key = it["title"].strip().lower()
-                    if key in seen:
-                        continue
-                    seen.add(key)
-                    merged.append(it)
-            except Exception as exc:  # one locale failing shouldn't kill the run
-                print(f"[warn] {name} [{loc.get('language')}]: feed failed: {exc}", file=sys.stderr)
+    # Phase 1: fetch every (company, locale) feed in parallel.
+    def grab_feed(task):
+        company, loc = task
+        try:
+            raw = fetch_feed(build_url(company["query"], loc["language"], loc["country"], window))
+            return company["name"], parse_items(raw, 0)
+        except Exception as exc:  # one locale failing shouldn't kill the run
+            print(f"[warn] {company['name']} [{loc.get('language')}]: feed failed: {exc}", file=sys.stderr)
+            return company["name"], []
 
-        if limit > 0:
-            merged = merged[:limit]
+    feed_tasks = [(c, loc) for c in companies for loc in locales]
+    merged = {c["name"]: [] for c in companies}
+    seen = {c["name"]: set() for c in companies}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for cname, items in pool.map(grab_feed, feed_tasks):
+            for it in items:
+                key = it["title"].strip().lower()
+                if key in seen[cname]:
+                    continue
+                seen[cname].add(key)
+                merged[cname].append(it)
 
-        kept = []
-        dropped = 0
-        for it in merged:
-            article_text = ""
-            try:
-                article_text = fetch_article_text(it["link"])
-            except Exception as exc:
-                print(f"[warn] {name}: article fetch failed: {exc}", file=sys.stderr)
+    if limit > 0:
+        for cname in merged:
+            merged[cname] = merged[cname][:limit]
 
-            if not is_relevant(match, it["title"], article_text):
-                dropped += 1
-                continue
+    # Phase 2: resolve + fetch + summarize every item in parallel.
+    match_by = {c["name"]: c["match"] for c in companies}
 
-            try:
-                it["summary"] = deepseek_summarize(
-                    it["title"], article_text, summary_language, model, base_url
-                )
-            except Exception as exc:
-                print(f"[warn] {name}: summarize failed: {exc}", file=sys.stderr)
-                it["summary"] = None
-            kept.append(it)
+    def process(task):
+        cname, it = task
+        article_text = ""
+        try:
+            article_text = fetch_article_text(it["link"])
+        except Exception as exc:
+            print(f"[warn] {cname}: article fetch failed: {exc}", file=sys.stderr)
+        if not is_relevant(match_by[cname], it["title"], article_text):
+            return cname, None
+        try:
+            it["summary"] = deepseek_summarize(
+                it["title"], article_text, summary_language, model, base_url
+            )
+        except Exception as exc:
+            print(f"[warn] {cname}: summarize failed: {exc}", file=sys.stderr)
+            it["summary"] = None
+        return cname, it
 
-        results[name] = kept
-        print(f"[ok] {name}: {len(kept)} kept, {dropped} dropped (from {len(merged)} merged)")
+    item_tasks = [(c["name"], it) for c in companies for it in merged[c["name"]]]
+    results = {c["name"]: [] for c in companies}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
+        for cname, it in pool.map(process, item_tasks):
+            if it is not None:
+                results[cname].append(it)
+
+    for c in companies:
+        name = c["name"]
+        print(f"[ok] {name}: {len(results[name])} kept (from {len(merged[name])} merged)")
 
     date_str = datetime.date.today().isoformat()
     os.makedirs(NEWS_DIR, exist_ok=True)

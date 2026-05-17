@@ -14,6 +14,7 @@
     { "name": "阿里通义千问 Qwen", "query": "Alibaba Qwen", "match": "qwen" }
   ],
   "max_items_per_brand": 0,
+  "concurrency": 8,
   "time_window": "1d",
   "locales": [
     { "language": "zh-CN", "country": "CN" },
