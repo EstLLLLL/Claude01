@@ -14,6 +14,8 @@
     { "name": "阿里通义千问 Qwen", "query": "Qwen OR 通义千问 OR Tongyi", "match": "qwen|通义千问|tongyi" }
   ],
   "max_items_per_brand": 10,
+  "create_issue": true,
+  "issue_items_per_brand": 5,
   "concurrency": 8,
   "time_window": "1d",
   "locales": [
