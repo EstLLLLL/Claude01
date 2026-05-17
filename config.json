@@ -2,18 +2,18 @@
   "brands": [
     { "name": "OpenAI", "query": "OpenAI", "match": "openai" },
     { "name": "Anthropic", "query": "Anthropic", "match": "anthropic" },
-    { "name": "xAI (Grok)", "query": "xAI", "match": "xai" },
+    { "name": "xAI (Grok)", "query": "xAI OR Grok", "match": "xai|grok" },
     { "name": "Google Gemini", "query": "Google Gemini", "match": "gemini" },
-    { "name": "Meta AI", "query": "Meta AI", "match": "meta ai" },
+    { "name": "Meta AI", "query": "Meta AI OR Llama", "match": "meta ai|llama" },
     { "name": "Mistral AI", "query": "Mistral AI", "match": "mistral" },
-    { "name": "DeepSeek", "query": "DeepSeek", "match": "deepseek" },
-    { "name": "字节跳动 ByteDance", "query": "ByteDance", "match": "bytedance" },
-    { "name": "MiniMax", "query": "MiniMax", "match": "minimax" },
-    { "name": "智谱 Zhipu AI", "query": "Zhipu AI", "match": "zhipu" },
-    { "name": "月之暗面 Moonshot (Kimi)", "query": "Moonshot AI Kimi", "match": "moonshot" },
-    { "name": "阿里通义千问 Qwen", "query": "Alibaba Qwen", "match": "qwen" }
+    { "name": "DeepSeek", "query": "DeepSeek OR 深度求索", "match": "deepseek|深度求索" },
+    { "name": "字节跳动 ByteDance", "query": "ByteDance OR 字节跳动 OR 豆包 OR Doubao", "match": "bytedance|字节跳动|豆包|doubao" },
+    { "name": "MiniMax", "query": "MiniMax OR 海螺AI", "match": "minimax|海螺" },
+    { "name": "智谱 Zhipu AI", "query": "Zhipu OR 智谱 OR 智谱清言 OR GLM", "match": "zhipu|智谱|glm" },
+    { "name": "月之暗面 Moonshot (Kimi)", "query": "Kimi OR 月之暗面 OR Moonshot AI", "match": "moonshot|kimi|月之暗面" },
+    { "name": "阿里通义千问 Qwen", "query": "Qwen OR 通义千问 OR Tongyi", "match": "qwen|通义千问|tongyi" }
   ],
-  "max_items_per_brand": 0,
+  "max_items_per_brand": 10,
   "concurrency": 8,
   "time_window": "1d",
   "locales": [
