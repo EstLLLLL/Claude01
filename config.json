@@ -1,0 +1,12 @@
+{
+  "brands": [
+    "Halara",
+    "Lululemon",
+    "Alo Yoga",
+    "Gymshark",
+    "SHEIN"
+  ],
+  "max_items_per_brand": 8,
+  "language": "en-US",
+  "country": "US"
+}
