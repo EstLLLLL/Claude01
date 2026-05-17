@@ -155,11 +155,43 @@ def resolve_google_news_url(url):
     return json.loads('"' + m.group(1) + '"')
 
 
+MIN_BODY_CHARS = 500  # below this a page is likely a JS/consent shell
+
+
 def fetch_article_text(url):
-    """Resolve the Google News redirect and pull readable body text."""
+    """Resolve the Google News redirect and pull readable body text.
+
+    Sites like MSN serve a JS shell to bots, so when the direct fetch
+    yields too little text we retry through the r.jina.ai reader proxy,
+    which renders the page and returns plain readable text.
+    """
     real_url = resolve_google_news_url(url)
-    raw_html, _, charset = http_get(real_url, timeout=25)
-    return extract_text(raw_html, charset)
+    text = ""
+    try:
+        raw_html, _, charset = http_get(real_url, timeout=25)
+        text = extract_text(raw_html, charset)
+    except Exception as exc:
+        print(f"[warn] direct fetch failed: {exc}", file=sys.stderr)
+
+    if len(text) < MIN_BODY_CHARS:
+        try:
+            raw, _, charset = http_get(f"https://r.jina.ai/{real_url}", timeout=40)
+            alt = raw.decode(charset or "utf-8", errors="replace")
+            alt = re.sub(r"\s+", " ", alt).strip()
+            if len(alt) > len(text):
+                text = alt
+        except Exception as exc:
+            print(f"[warn] reader-proxy fallback failed: {exc}", file=sys.stderr)
+    return text
+
+
+def is_relevant(brand, title, body):
+    """Keep items where the brand is in the title or clearly central to the
+    body (>= 2 mentions), dropping articles that only name-drop it once."""
+    b = brand.lower()
+    if b in title.lower():
+        return True
+    return body.lower().count(b) >= 2
 
 
 def deepseek_summarize(title, article_text, summary_language, model, base_url):
@@ -262,12 +294,19 @@ def main():
             results[brand] = []
             continue
 
+        kept = []
+        dropped = 0
         for it in items:
             article_text = ""
             try:
                 article_text = fetch_article_text(it["link"])
             except Exception as exc:
                 print(f"[warn] {brand}: article fetch failed: {exc}", file=sys.stderr)
+
+            if not is_relevant(brand, it["title"], article_text):
+                dropped += 1
+                continue
+
             try:
                 it["summary"] = deepseek_summarize(
                     it["title"], article_text, summary_language, model, base_url
@@ -275,9 +314,10 @@ def main():
             except Exception as exc:
                 print(f"[warn] {brand}: summarize failed: {exc}", file=sys.stderr)
                 it["summary"] = None
+            kept.append(it)
 
-        results[brand] = items
-        print(f"[ok] {brand}: {len(items)} item(s)")
+        results[brand] = kept
+        print(f"[ok] {brand}: {len(kept)} item(s) kept, {dropped} dropped as off-topic")
 
     date_str = datetime.date.today().isoformat()
     os.makedirs(NEWS_DIR, exist_ok=True)
