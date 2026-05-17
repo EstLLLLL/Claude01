@@ -95,9 +95,70 @@ def extract_text(raw_html, charset):
     return text
 
 
+def resolve_google_news_url(url):
+    """Turn a news.google.com/rss/articles/<id> link into the publisher URL.
+
+    Google no longer 302-redirects these links; the real URL must be
+    obtained from the internal `batchexecute` endpoint, using a signature
+    and timestamp embedded in the article page.
+    """
+    host = urllib.parse.urlparse(url).netloc
+    if "news.google.com" not in host:
+        return url  # already a direct publisher link
+
+    article_id = urllib.parse.urlparse(url).path.rstrip("/").split("/")[-1]
+    page, _, charset = http_get(
+        f"https://news.google.com/rss/articles/{article_id}", timeout=25
+    )
+    page_text = page.decode(charset or "utf-8", errors="replace")
+
+    def attr(name):
+        m = re.search(name + r'="([^"]+)"', page_text)
+        return m.group(1) if m else None
+
+    signature = attr("data-n-a-sg")
+    timestamp = attr("data-n-a-ts")
+    inner_id = attr("data-n-a-id") or article_id
+    if not signature or not timestamp:
+        raise RuntimeError("could not find batchexecute signature")
+
+    inner = json.dumps(
+        [
+            "garturlreq",
+            [
+                ["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1,
+                 None, None, None, None, None, 0, 1],
+                "X", "X", 1, [1, 1, 1], 1, 1, None, 0, 0, None, 0,
+            ],
+            inner_id,
+            int(timestamp),
+            signature,
+        ]
+    )
+    freq = json.dumps([[["Fbv4je", inner, None, "generic"]]])
+    body = urllib.parse.urlencode({"f.req": freq}).encode("utf-8")
+    request = urllib.request.Request(
+        "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+            "User-Agent": USER_AGENT,
+        },
+    )
+    with urllib.request.urlopen(request, timeout=25) as response:
+        raw = response.read().decode("utf-8", errors="replace")
+
+    m = re.search(r'garturlres\\",\\"(.*?)\\"', raw)
+    if not m:
+        raise RuntimeError("batchexecute returned no URL")
+    return json.loads('"' + m.group(1) + '"')
+
+
 def fetch_article_text(url):
     """Resolve the Google News redirect and pull readable body text."""
-    raw_html, _, charset = http_get(url, timeout=25)
+    real_url = resolve_google_news_url(url)
+    raw_html, _, charset = http_get(real_url, timeout=25)
     return extract_text(raw_html, charset)
 
 
