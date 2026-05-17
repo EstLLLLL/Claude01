@@ -1,11 +1,14 @@
 # Claude01 — Daily Brand News
 
 Fetches daily news for clothing brands (Halara and peers) from Google News
-RSS and writes a Markdown digest to `news/<date>.md`.
+RSS, fetches each article, summarizes it with the DeepSeek API, and writes
+a Markdown digest to `news/<date>.md`. Every item found that day is listed
+(no truncation), each with a short summary.
 
 ## Usage
 
 ```bash
+export DEEPSEEK_API_KEY=sk-...   # optional; without it items are listed without summaries
 python3 fetch_news.py
 ```
 
@@ -19,9 +22,17 @@ Edit `config.json`:
 | Key | Meaning |
 | --- | --- |
 | `brands` | List of brand names to track (add/remove freely) |
-| `max_items_per_brand` | Max headlines kept per brand |
+| `max_items_per_brand` | Items kept per brand; `0` = no limit (list all) |
+| `time_window` | Google News recency, e.g. `1d`, `7d` |
 | `language` | Google News `hl`, e.g. `en-US` |
 | `country` | Google News `gl`/`ceid`, e.g. `US` |
+| `summary_language` | Language for summaries, e.g. `Chinese` |
+| `deepseek_model` | DeepSeek model, e.g. `deepseek-chat` |
+| `deepseek_base_url` | DeepSeek API base, default `https://api.deepseek.com` |
+
+Summaries require a `DEEPSEEK_API_KEY`. For the daily workflow, add it
+under the repo's **Settings → Secrets and variables → Actions** as
+`DEEPSEEK_API_KEY`.
 
 ## Automation
 
