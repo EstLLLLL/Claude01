@@ -186,13 +186,16 @@ def fetch_article_text(url):
     return text
 
 
-def is_relevant(brand, title, body):
-    """Keep items where the brand is in the title or clearly central to the
-    body (>= 2 mentions), dropping articles that only name-drop it once."""
-    b = brand.lower()
-    if b in title.lower():
+def is_relevant(match, title, body):
+    """Keep items where any alias is in the title, or aliases are clearly
+    central to the body (>= 2 total mentions). `match` is a lowercase
+    string of aliases separated by '|'."""
+    aliases = [a.strip() for a in match.lower().split("|") if a.strip()]
+    t = title.lower()
+    if any(a in t for a in aliases):
         return True
-    return body.lower().count(b) >= 2
+    x = body.lower()
+    return sum(x.count(a) for a in aliases) >= 2
 
 
 def deepseek_summarize(title, article_text, summary_language, model, base_url):
@@ -323,9 +326,11 @@ def main():
                 seen[cname].add(key)
                 merged[cname].append(it)
 
+    # Process a few extra candidates so relevance filtering still leaves
+    # roughly `limit` items; the final list is capped to `limit` below.
     if limit > 0:
         for cname in merged:
-            merged[cname] = merged[cname][:limit]
+            merged[cname] = merged[cname][: limit * 3]
 
     # Phase 2: resolve + fetch + summarize every item in parallel.
     match_by = {c["name"]: c["match"] for c in companies}
@@ -354,6 +359,10 @@ def main():
         for cname, it in pool.map(process, item_tasks):
             if it is not None:
                 results[cname].append(it)
+
+    if limit > 0:
+        for cname in results:
+            results[cname] = results[cname][:limit]
 
     for c in companies:
         name = c["name"]
