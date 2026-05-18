@@ -19,8 +19,8 @@
   "concurrency": 8,
   "time_window": "1d",
   "locales": [
-    { "language": "zh-CN", "country": "CN" },
-    { "language": "en-US", "country": "US" }
+    { "language": "en-US", "country": "US", "max": 8 },
+    { "language": "zh-CN", "country": "CN", "max": 3 }
   ],
   "summary_language": "Chinese",
   "deepseek_model": "deepseek-chat",
