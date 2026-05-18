@@ -198,6 +198,25 @@ def is_relevant(match, title, body):
     return sum(x.count(a) for a in aliases) >= 2
 
 
+_META_PAT = re.compile(
+    r"(实质性|原创新闻|仅据标题|旧闻|二次解读|营销软文|公关稿|擦边|"
+    r"符合[^。；！\n]*标准|属于[^。；！\n]*新闻|是[^。；！\n]*重大[^。；！\n]*事件)"
+)
+
+
+def scrub_summary(text):
+    """Drop sentences that editorialize about the news (significance /
+    originality / "仅据标题" etc.); keep only factual sentences."""
+    text = str(text).strip()
+    if not text:
+        return ""
+    text = text.replace("（仅据标题）", "").replace("(仅据标题)", "")
+    parts = re.split(r"(?<=[。！？；\n])", text)
+    kept = [p for p in parts if p.strip() and not _META_PAT.search(p)]
+    result = "".join(kept).strip()
+    return result or text.strip()
+
+
 def deepseek_analyze(title, article_text, summary_language, model, base_url):
     """Return (significant, summary).
 
@@ -210,18 +229,20 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
 
     if article_text and len(article_text) > 200:
         source_block = article_text[:ARTICLE_TEXT_LIMIT]
-        body_note = ""
     else:
         source_block = title
-        body_note = "（正文无法获取，仅据标题判断，摘要结尾注明“（仅据标题）”）"
 
     instruction = (
-        "你是严格的科技新闻编辑。判断下面这条是否为最近一两天发生的、"
+        "你是严格的科技新闻编辑。先判断这条是否为最近一两天发生的、"
         "关于该 AI 公司的【实质性原创新闻】（融资、产品/模型发布、重大合作、"
-        "人事变动、财报、监管/诉讼、重大数据等）。若属于旧闻复读、对几天前"
-        "事件的二次解读、营销软文/公关稿、商品罗列、或与该公司仅擦边，则判为"
-        f"不实质。{body_note} 用{summary_language}写 2-3 句摘要。"
-        '只输出严格 JSON：{"significant": true 或 false, "summary": "..."}'
+        "人事变动、财报、监管/诉讼、重大数据等）。旧闻复读、对几天前事件的"
+        "二次解读、营销软文/公关稿、商品罗列、或与该公司仅擦边，判为不实质。\n"
+        f"然后用{summary_language}写一段 2-3 句的新闻摘要。\n"
+        "【摘要硬性要求】只陈述新闻事实本身（谁、做了什么、有何影响）；"
+        "严禁出现任何对新闻本身的评价或元话术，例如“属于/符合实质性原创新闻”"
+        "“是近期重大事件”“仅据标题”“旧闻”“二次解读”“营销”等字样；"
+        "不要解释你为什么判它实质或不实质——判断只放进 significant 字段。\n"
+        '只输出严格 JSON：{"significant": true 或 false, "summary": "纯事实摘要"}'
     )
 
     payload = json.dumps(
@@ -264,13 +285,13 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
                 obj = None
 
     if isinstance(obj, dict):
-        summary = str(obj.get("summary", "")).strip()
+        summary = scrub_summary(str(obj.get("summary", "")))
         return bool(obj.get("significant", True)), (summary or None)
 
     # Couldn't parse JSON: fail open (keep item) but never leak the
     # significance flag / raw JSON into the summary text.
     fallback = re.sub(r'["{}]|significant|summary|true|false|:', " ", content)
-    fallback = re.sub(r"\s+", " ", fallback).strip()
+    fallback = scrub_summary(re.sub(r"\s+", " ", fallback))
     return True, (fallback or None)
 
 
@@ -336,6 +357,25 @@ def create_github_issue(title, body, assignees=None):
         return
     if not assignees:
         assignees = [repo.split("/")[0]] if "/" in repo else []
+
+    # Skip if an open issue with the same title already exists today.
+    try:
+        check = urllib.request.Request(
+            f"https://api.github.com/repos/{repo}/issues?state=open&per_page=50",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/vnd.github+json",
+                "User-Agent": USER_AGENT,
+            },
+        )
+        with urllib.request.urlopen(check, timeout=30) as resp:
+            existing = json.loads(resp.read().decode("utf-8"))
+        if any(i.get("title") == title for i in existing if isinstance(i, dict)):
+            print(f"Issue '{title}' already exists; skipping.")
+            return
+    except Exception as exc:
+        print(f"[warn] duplicate check failed, creating anyway: {exc}", file=sys.stderr)
+
     fields = {"title": title, "body": body}
     if assignees:
         fields["assignees"] = assignees
