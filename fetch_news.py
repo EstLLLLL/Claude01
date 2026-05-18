@@ -233,6 +233,7 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
             ],
             "temperature": 0.2,
             "stream": False,
+            "response_format": {"type": "json_object"},
         }
     ).encode("utf-8")
 
@@ -251,12 +252,26 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
     content = data["choices"][0]["message"]["content"].strip()
 
     cleaned = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+    obj = None
     try:
-        parsed = json.loads(cleaned)
-        return bool(parsed.get("significant", True)), str(parsed.get("summary", "")).strip()
-    except (ValueError, AttributeError):
-        # Unparseable -> fail open: keep it, use raw text as the summary.
-        return True, content
+        obj = json.loads(cleaned)
+    except ValueError:
+        m = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+            except ValueError:
+                obj = None
+
+    if isinstance(obj, dict):
+        summary = str(obj.get("summary", "")).strip()
+        return bool(obj.get("significant", True)), (summary or None)
+
+    # Couldn't parse JSON: fail open (keep item) but never leak the
+    # significance flag / raw JSON into the summary text.
+    fallback = re.sub(r'["{}]|significant|summary|true|false|:', " ", content)
+    fallback = re.sub(r"\s+", " ", fallback).strip()
+    return True, (fallback or None)
 
 
 def build_markdown(date_str, results, summarized):
