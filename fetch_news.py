@@ -198,31 +198,40 @@ def is_relevant(match, title, body):
     return sum(x.count(a) for a in aliases) >= 2
 
 
-def deepseek_summarize(title, article_text, summary_language, model, base_url):
+def deepseek_analyze(title, article_text, summary_language, model, base_url):
+    """Return (significant, summary).
+
+    `significant` is False for stale rehashes, second-hand re-interpretation,
+    marketing/PR fluff, product listings, or only-tangential mentions.
+    On any error we fail open (keep the item) so the digest is never empty.
+    """
     if not DEEPSEEK_API_KEY:
-        return None
+        return True, None
 
     if article_text and len(article_text) > 200:
         source_block = article_text[:ARTICLE_TEXT_LIMIT]
-        instruction = (
-            f"用{summary_language}为下面这篇新闻写 2-3 句话的摘要，"
-            f"说清楚发生了什么、涉及哪个品牌、有何影响。只输出摘要本身。"
-        )
+        body_note = ""
     else:
         source_block = title
-        instruction = (
-            f"下面只有新闻标题，正文无法获取。请用{summary_language}基于标题"
-            f"写 1-2 句话说明它大概在讲什么，并在结尾注明“（仅据标题）”。只输出摘要本身。"
-        )
+        body_note = "（正文无法获取，仅据标题判断，摘要结尾注明“（仅据标题）”）"
+
+    instruction = (
+        "你是严格的科技新闻编辑。判断下面这条是否为最近一两天发生的、"
+        "关于该 AI 公司的【实质性原创新闻】（融资、产品/模型发布、重大合作、"
+        "人事变动、财报、监管/诉讼、重大数据等）。若属于旧闻复读、对几天前"
+        "事件的二次解读、营销软文/公关稿、商品罗列、或与该公司仅擦边，则判为"
+        f"不实质。{body_note} 用{summary_language}写 2-3 句摘要。"
+        '只输出严格 JSON：{"significant": true 或 false, "summary": "..."}'
+    )
 
     payload = json.dumps(
         {
             "model": model,
             "messages": [
-                {"role": "system", "content": "你是一个简洁、客观的新闻摘要助手。"},
+                {"role": "system", "content": "你是严格、客观的科技新闻编辑，只输出 JSON。"},
                 {"role": "user", "content": f"{instruction}\n\n标题：{title}\n\n内容：{source_block}"},
             ],
-            "temperature": 0.3,
+            "temperature": 0.2,
             "stream": False,
         }
     ).encode("utf-8")
@@ -239,7 +248,15 @@ def deepseek_summarize(title, article_text, summary_language, model, base_url):
     )
     with urllib.request.urlopen(request, timeout=60) as response:
         data = json.loads(response.read().decode("utf-8"))
-    return data["choices"][0]["message"]["content"].strip()
+    content = data["choices"][0]["message"]["content"].strip()
+
+    cleaned = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
+    try:
+        parsed = json.loads(cleaned)
+        return bool(parsed.get("significant", True)), str(parsed.get("summary", "")).strip()
+    except (ValueError, AttributeError):
+        # Unparseable -> fail open: keep it, use raw text as the summary.
+        return True, content
 
 
 def build_markdown(date_str, results, summarized):
@@ -354,7 +371,10 @@ def main():
         company, loc = task
         try:
             raw = fetch_feed(build_url(company["query"], loc["language"], loc["country"], window))
-            return company["name"], parse_items(raw, 0)
+            items = parse_items(raw, 0)
+            for it in items:
+                it["lang"] = loc["language"]
+            return company["name"], items
         except Exception as exc:  # one locale failing shouldn't kill the run
             print(f"[warn] {company['name']} [{loc.get('language')}]: feed failed: {exc}", file=sys.stderr)
             return company["name"], []
@@ -371,11 +391,20 @@ def main():
                 seen[cname].add(key)
                 merged[cname].append(it)
 
-    # Process a few extra candidates so relevance filtering still leaves
-    # roughly `limit` items; the final list is capped to `limit` below.
-    if limit > 0:
-        for cname in merged:
-            merged[cname] = merged[cname][: limit * 3]
+    # English first (locales are ordered en-US, then zh-CN). Cap candidates
+    # per language to a few times its quota so filtering still leaves enough.
+    lang_max = {l["language"]: int(l.get("max", 9999)) for l in locales}
+    for cname in merged:
+        per_lang = {}
+        capped = []
+        for it in merged[cname]:
+            lg = it.get("lang", "")
+            per_lang.setdefault(lg, 0)
+            if per_lang[lg] >= lang_max.get(lg, 9999) * 3:
+                continue
+            per_lang[lg] += 1
+            capped.append(it)
+        merged[cname] = capped
 
     # Phase 2: resolve + fetch + summarize every item in parallel.
     match_by = {c["name"]: c["match"] for c in companies}
@@ -390,12 +419,15 @@ def main():
         if not is_relevant(match_by[cname], it["title"], article_text):
             return cname, None
         try:
-            it["summary"] = deepseek_summarize(
+            significant, summary = deepseek_analyze(
                 it["title"], article_text, summary_language, model, base_url
             )
         except Exception as exc:
-            print(f"[warn] {cname}: summarize failed: {exc}", file=sys.stderr)
-            it["summary"] = None
+            print(f"[warn] {cname}: analyze failed: {exc}", file=sys.stderr)
+            significant, summary = True, None  # fail open
+        if not significant:
+            return cname, None
+        it["summary"] = summary
         return cname, it
 
     item_tasks = [(c["name"], it) for c in companies for it in merged[c["name"]]]
@@ -405,9 +437,18 @@ def main():
             if it is not None:
                 results[cname].append(it)
 
-    if limit > 0:
-        for cname in results:
-            results[cname] = results[cname][:limit]
+    # Keep English-first, enforce per-language quota, then the overall cap.
+    for cname in results:
+        per_lang = {}
+        selected = []
+        for it in results[cname]:
+            lg = it.get("lang", "")
+            per_lang.setdefault(lg, 0)
+            if per_lang[lg] >= lang_max.get(lg, 9999):
+                continue
+            per_lang[lg] += 1
+            selected.append(it)
+        results[cname] = selected[:limit] if limit > 0 else selected
 
     for c in companies:
         name = c["name"]
