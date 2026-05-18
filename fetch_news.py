@@ -322,15 +322,24 @@ def build_issue_body(date_str, results, repo, issue_items):
     return "\n".join(lines).rstrip() + "\n"
 
 
-def create_github_issue(title, body):
+def create_github_issue(title, body, assignees=None):
     """Open an Issue using the Actions-provided GITHUB_TOKEN. No-op when
-    the token/repository is unavailable (e.g. local runs)."""
+    the token/repository is unavailable (e.g. local runs).
+
+    Assigning the issue makes it show up on the assignee's GitHub home
+    page / global issues dashboard, not just inside the repository.
+    """
     token = os.environ.get("GITHUB_TOKEN", "").strip()
     repo = os.environ.get("GITHUB_REPOSITORY", "").strip()
     if not token or not repo:
         print("[warn] GITHUB_TOKEN/REPOSITORY unset; skipping Issue.", file=sys.stderr)
         return
-    payload = json.dumps({"title": title, "body": body}).encode("utf-8")
+    if not assignees:
+        assignees = [repo.split("/")[0]] if "/" in repo else []
+    fields = {"title": title, "body": body}
+    if assignees:
+        fields["assignees"] = assignees
+    payload = json.dumps(fields).encode("utf-8")
     request = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/issues",
         data=payload,
@@ -484,7 +493,11 @@ def main():
                 os.environ.get("GITHUB_REPOSITORY", ""),
                 int(config.get("issue_items_per_brand", 5)),
             )
-            create_github_issue(f"AI 公司新闻日报 · {date_str}", body)
+            create_github_issue(
+                f"AI 公司新闻日报 · {date_str}",
+                body,
+                config.get("issue_assignees"),
+            )
         except Exception as exc:
             print(f"[warn] issue creation failed: {exc}", file=sys.stderr)
 

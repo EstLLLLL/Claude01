@@ -16,6 +16,7 @@
   "max_items_per_brand": 10,
   "create_issue": true,
   "issue_items_per_brand": 5,
+  "issue_assignees": ["EstLLLLL"],
   "concurrency": 8,
   "time_window": "1d",
   "locales": [
