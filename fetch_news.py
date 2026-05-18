@@ -313,6 +313,9 @@ def create_github_issue(title, body):
     with urllib.request.urlopen(request, timeout=30) as response:
         data = json.loads(response.read().decode("utf-8"))
     print(f"Opened issue #{data.get('number')}: {data.get('html_url')}")
+
+
+def main():
     config = load_config()
     brands = config.get("brands", [])
     if not brands:
