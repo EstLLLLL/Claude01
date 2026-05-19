@@ -2,8 +2,11 @@ name: Daily Brand News
 
 on:
   schedule:
-    # 06:00 UTC every day
+    # Multiple slots because GitHub's scheduler is best-effort and may
+    # skip/delay a run. Per-day issue de-dup keeps it to one issue/day.
     - cron: "0 6 * * *"
+    - cron: "0 10 * * *"
+    - cron: "0 14 * * *"
   workflow_dispatch: {}
 
 permissions:
