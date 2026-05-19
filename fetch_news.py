@@ -225,7 +225,7 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
     On any error we fail open (keep the item) so the digest is never empty.
     """
     if not DEEPSEEK_API_KEY:
-        return True, None
+        return True, None, ""
 
     if article_text and len(article_text) > 200:
         source_block = article_text[:ARTICLE_TEXT_LIMIT]
@@ -242,7 +242,11 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
         "严禁出现任何对新闻本身的评价或元话术，例如“属于/符合实质性原创新闻”"
         "“是近期重大事件”“仅据标题”“旧闻”“二次解读”“营销”等字样；"
         "不要解释你为什么判它实质或不实质——判断只放进 significant 字段。\n"
-        '只输出严格 JSON：{"significant": true 或 false, "summary": "纯事实摘要"}'
+        "再给出 event：用一个极简短语概括这条news报道的【核心事件】"
+        "（公司+动作+对象，10 字以内，同一事件不同媒体报道必须给出完全相同的 event），"
+        "用于去重。\n"
+        '只输出严格 JSON：{"significant": true 或 false, '
+        '"summary": "纯事实摘要", "event": "核心事件短语"}'
     )
 
     payload = json.dumps(
@@ -286,13 +290,14 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
 
     if isinstance(obj, dict):
         summary = scrub_summary(str(obj.get("summary", "")))
-        return bool(obj.get("significant", True)), (summary or None)
+        event = str(obj.get("event", "")).strip()
+        return bool(obj.get("significant", True)), (summary or None), event
 
     # Couldn't parse JSON: fail open (keep item) but never leak the
     # significance flag / raw JSON into the summary text.
-    fallback = re.sub(r'["{}]|significant|summary|true|false|:', " ", content)
+    fallback = re.sub(r'["{}]|significant|summary|event|true|false|:', " ", content)
     fallback = scrub_summary(re.sub(r"\s+", " ", fallback))
-    return True, (fallback or None)
+    return True, (fallback or None), ""
 
 
 def build_markdown(date_str, results, summarized):
@@ -333,12 +338,13 @@ def build_issue_body(date_str, results, repo, issue_items):
     for brand, items in results.items():
         if not items:
             continue
-        lines.append(f"### {brand}（{len(items)} 条）")
-        for it in items[:issue_items]:
+        shown = [it for it in items if it.get("summary")][:issue_items]
+        if not shown:
+            continue
+        lines.append(f"### {brand}（{len(shown)} 条）")
+        for it in shown:
             lines.append(f"- [{it['title']}]({it['link']})")
-            summary = it.get("summary")
-            if summary:
-                lines.append(f"  {summary[:120]}")
+            lines.append(f"  {it['summary']}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -483,15 +489,16 @@ def main():
         if not is_relevant(match_by[cname], it["title"], article_text):
             return cname, None
         try:
-            significant, summary = deepseek_analyze(
+            significant, summary, event = deepseek_analyze(
                 it["title"], article_text, summary_language, model, base_url
             )
         except Exception as exc:
             print(f"[warn] {cname}: analyze failed: {exc}", file=sys.stderr)
-            significant, summary = True, None  # fail open
-        if not significant:
-            return cname, None
+            significant, summary, event = True, None, ""  # fail open
+        if not significant or not summary:
+            return cname, None  # drop non-substantive or empty-summary items
         it["summary"] = summary
+        it["event"] = event
         return cname, it
 
     item_tasks = [(c["name"], it) for c in companies for it in merged[c["name"]]]
@@ -500,6 +507,35 @@ def main():
         for cname, it in pool.map(process, item_tasks):
             if it is not None:
                 results[cname].append(it)
+
+    # De-duplicate same-event coverage within a company (English-first
+    # order is preserved, so the original English report is kept).
+    def _norm(s):
+        return re.sub(r"[^0-9a-z一-鿿]", "", str(s).lower())
+
+    def _shingles(s):
+        return {s[i : i + 3] for i in range(len(s) - 2)} if len(s) >= 3 else {s}
+
+    def _sim(a, b):
+        sa, sb = _shingles(a), _shingles(b)
+        return len(sa & sb) / len(sa | sb) if sa and sb else 0.0
+
+    for cname in results:
+        seen_events = set()
+        kept_titles = []
+        unique = []
+        for it in results[cname]:
+            ev = _norm(it.get("event") or "")
+            tc = _norm(re.split(r"\s+-\s+", it["title"])[0])
+            if ev and ev in seen_events:
+                continue
+            if any(_sim(tc, kt) >= 0.6 for kt in kept_titles):
+                continue
+            if ev:
+                seen_events.add(ev)
+            kept_titles.append(tc)
+            unique.append(it)
+        results[cname] = unique
 
     # Keep English-first, enforce per-language quota, then the overall cap.
     for cname in results:
