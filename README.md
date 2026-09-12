@@ -3,14 +3,16 @@
 Fetches daily news for AI companies (OpenAI, Anthropic, xAI, Google
 Gemini, DeepSeek, ByteDance, MiniMax, Zhipu, Moonshot, Qwen, …) from
 Google News RSS in both Chinese and English, fetches each article,
-summarizes it with the DeepSeek API, and writes a Markdown digest to
+summarizes it with DeepSeek hosted on Volcengine Ark, and writes a Markdown digest to
 `news/<date>.md`. Every relevant item found that day is listed (no
 truncation), each with a short Chinese summary.
 
 ## Usage
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...   # optional; without it items are listed without summaries
+export ARK_API_KEY=...
+export ARK_MODEL=deepseek-v4-pro-ga-260813
+python3 ark_client.py  # verify credentials/model access
 python3 fetch_news.py
 ```
 
@@ -28,18 +30,26 @@ Edit `config.json`:
 | `time_window` | Google News recency, e.g. `1d`, `7d` |
 | `locales` | List of `{ "language": hl, "country": gl }`; results from all locales are merged and de-duplicated by title |
 | `summary_language` | Language for summaries, e.g. `Chinese` |
-| `deepseek_model` | DeepSeek model, e.g. `deepseek-chat` |
-| `deepseek_base_url` | DeepSeek API base, default `https://api.deepseek.com` |
 
-Summaries require a `DEEPSEEK_API_KEY`. For the daily workflow, add it
-under the repo's **Settings → Secrets and variables → Actions** as
-`DEEPSEEK_API_KEY`.
+## Ark configuration and failures
+
+Configure repository **Secret** `ARK_API_KEY` and repository **Variable**
+`ARK_MODEL=deepseek-v4-pro-ga-260813`. The client uses
+`https://ark.cn-beijing.volces.com/api/v3`; it never falls back to the
+DeepSeek direct API. Model versions are selected explicitly after checking
+Ark's model list and making a successful test call. V4.1 is not assumed to
+be available just because DeepSeek's own API offers it.
+
+Every run tests model access first. Authentication, billing, unavailable-model,
+and invalid-response errors fail the workflow. They cannot be interpreted as
+"no news" or overwrite an existing digest. Temporary throttling/server errors
+are retried up to three times. RSS candidates and the retrieved text sent to
+the model are retained in the `news-materials-<run-id>` artifact for 30 days,
+including when analysis fails after fetching.
 
 ## Automation
 
-`.github/workflows/daily-news.yml` runs daily at 06:00 UTC (and on manual
-`workflow_dispatch`), then commits the new digest back to the repository.
-
-> Note: outbound HTTP is blocked in some sandboxed environments, so the
-> script may produce an empty digest there. It runs normally on GitHub
-> Actions runners, which have open network egress.
+The workflow retains its existing three daily scheduling slots. Manual
+`dry_run=true` creates an artifact preview without committing a digest or
+creating a GitHub Issue. Runs are serialized to prevent concurrent writes.
+Regression tests run for code changes and before each daily job.

@@ -7,7 +7,16 @@ on:
     - cron: "0 6 * * *"
     - cron: "0 10 * * *"
     - cron: "0 14 * * *"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Generate a preview without committing or creating an issue"
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-brand-news
+  cancel-in-progress: false
 
 permissions:
   contents: write
@@ -16,6 +25,7 @@ permissions:
 jobs:
   fetch-news:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,14 +35,35 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Regression tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: Check Ark model access
+        env:
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          ARK_MODEL: ${{ vars.ARK_MODEL }}
+        run: python3 ark_client.py
+
       - name: Fetch news
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          ARK_API_KEY: ${{ secrets.ARK_API_KEY }}
+          ARK_MODEL: ${{ vars.ARK_MODEL }}
+          DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 fetch_news.py
 
+      - name: Preserve fetched candidates and preview
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: news-materials-${{ github.run_id }}
+          path: output/
+          retention-days: 30
+          if-no-files-found: warn
+
       - name: Commit digest
+        if: github.event.inputs.dry_run != 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

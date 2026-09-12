@@ -23,7 +23,5 @@
     { "language": "en-US", "country": "US", "max": 8 },
     { "language": "zh-CN", "country": "CN", "max": 3 }
   ],
-  "summary_language": "Chinese",
-  "deepseek_model": "deepseek-chat",
-  "deepseek_base_url": "https://api.deepseek.com"
+  "summary_language": "Chinese"
 }

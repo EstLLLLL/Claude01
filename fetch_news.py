@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Fetch daily clothing-brand news from Google News RSS and summarize it.
+"""Fetch daily AI-company news from Google News RSS and summarize it.
 
 Standard library only, so it runs anywhere without `pip install`.
 Reads brands from config.json, fetches each article, and uses the DeepSeek
-API (OpenAI-compatible) to write a short Chinese summary per item, then
+model on Ark (OpenAI-compatible) to write a short Chinese summary per item, then
 writes a Markdown digest to news/<date>.md.
 
-Set the DEEPSEEK_API_KEY environment variable to enable summaries. Without
-it the digest still lists every item, just without summaries.
+Set ARK_API_KEY and ARK_MODEL to use DeepSeek hosted on Volcengine Ark.
+API failures stop publication instead of producing an empty digest.
 """
 
 import concurrent.futures
@@ -21,13 +21,15 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
+from ark_client import ArkError, chat_json, settings
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(ROOT, "config.json")
 NEWS_DIR = os.path.join(ROOT, "news")
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 USER_AGENT = "Mozilla/5.0 (compatible; halara-news-bot/1.0)"
 
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+OUTPUT_DIR = os.path.join(ROOT, "output")
 ARTICLE_TEXT_LIMIT = 4000  # chars of article body sent to the model
 
 
@@ -217,16 +219,13 @@ def scrub_summary(text):
     return result or text.strip()
 
 
-def deepseek_analyze(title, article_text, summary_language, model, base_url):
+def deepseek_analyze(title, article_text, summary_language):
     """Return (significant, summary).
 
     `significant` is False for stale rehashes, second-hand re-interpretation,
     marketing/PR fluff, product listings, or only-tangential mentions.
-    On any error we fail open (keep the item) so the digest is never empty.
+    API/response errors propagate and prevent publication.
     """
-    if not DEEPSEEK_API_KEY:
-        return True, None, ""
-
     if article_text and len(article_text) > 200:
         source_block = article_text[:ARTICLE_TEXT_LIMIT]
     else:
@@ -249,61 +248,24 @@ def deepseek_analyze(title, article_text, summary_language, model, base_url):
         '"summary": "纯事实摘要", "event": "核心事件短语"}'
     )
 
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": "你是严格、客观的科技新闻编辑，只输出 JSON。"},
-                {"role": "user", "content": f"{instruction}\n\n标题：{title}\n\n内容：{source_block}"},
-            ],
-            "temperature": 0.2,
-            "stream": False,
-            "response_format": {"type": "json_object"},
-        }
-    ).encode("utf-8")
-
-    request = urllib.request.Request(
-        f"{base_url.rstrip('/')}/chat/completions",
-        data=payload,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-            "Content-Type": "application/json",
-            "User-Agent": USER_AGENT,
-        },
-    )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        data = json.loads(response.read().decode("utf-8"))
-    content = data["choices"][0]["message"]["content"].strip()
-
-    cleaned = re.sub(r"^```(?:json)?|```$", "", content, flags=re.MULTILINE).strip()
-    obj = None
-    try:
-        obj = json.loads(cleaned)
-    except ValueError:
-        m = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
-        if m:
-            try:
-                obj = json.loads(m.group(0))
-            except ValueError:
-                obj = None
-
-    if isinstance(obj, dict):
-        summary = scrub_summary(str(obj.get("summary", "")))
-        event = str(obj.get("event", "")).strip()
-        return bool(obj.get("significant", True)), (summary or None), event
-
-    # Couldn't parse JSON: fail open (keep item) but never leak the
-    # significance flag / raw JSON into the summary text.
-    fallback = re.sub(r'["{}]|significant|summary|event|true|false|:', " ", content)
-    fallback = scrub_summary(re.sub(r"\s+", " ", fallback))
-    return True, (fallback or None), ""
+    obj = chat_json([
+        {"role": "system", "content": "你是严格、客观的科技新闻编辑，只输出 JSON。"},
+        {"role": "user", "content": f"{instruction}\n\n标题：{title}\n\n内容：{source_block}"},
+    ])
+    if not isinstance(obj.get("significant"), bool):
+        raise ArkError("News analysis is missing a boolean significant field")
+    if not isinstance(obj.get("summary"), str) or not isinstance(obj.get("event", ""), str):
+        raise ArkError("News analysis returned invalid summary/event fields")
+    summary = scrub_summary(obj["summary"])
+    if obj["significant"] and not summary:
+        raise ArkError("Significant news returned an empty summary")
+    return obj["significant"], summary or None, obj.get("event", "").strip()
 
 
 def build_markdown(date_str, results, summarized):
     lines = [f"# AI Company News - {date_str}", ""]
     total = sum(len(v) for v in results.values())
-    note = "with DeepSeek summaries" if summarized else "no summaries (DEEPSEEK_API_KEY unset)"
+    note = f"with Ark DeepSeek summaries ({settings()[1]})" if summarized else "no summaries"
     lines.append(
         f"_Auto-generated digest. {total} item(s) across {len(results)} brand(s); {note}._"
     )
@@ -415,12 +377,10 @@ def main():
         {"language": config.get("language", "en-US"), "country": config.get("country", "US")}
     ]
     summary_language = config.get("summary_language", "Chinese")
-    model = config.get("deepseek_model", "deepseek-chat")
-    base_url = config.get("deepseek_base_url", "https://api.deepseek.com")
+    _, model, _ = settings()
+    print(f"Using Ark model: {model}")
     concurrency = max(1, int(config.get("concurrency", 8)))
 
-    if not DEEPSEEK_API_KEY:
-        print("[warn] DEEPSEEK_API_KEY not set; listing items without summaries.", file=sys.stderr)
 
     companies = []
     for entry in brands:
@@ -486,15 +446,15 @@ def main():
             article_text = fetch_article_text(it["link"])
         except Exception as exc:
             print(f"[warn] {cname}: article fetch failed: {exc}", file=sys.stderr)
+        it["article_text"] = article_text[:ARTICLE_TEXT_LIMIT]
         if not is_relevant(match_by[cname], it["title"], article_text):
             return cname, None
         try:
             significant, summary, event = deepseek_analyze(
-                it["title"], article_text, summary_language, model, base_url
+                it["title"], article_text, summary_language
             )
         except Exception as exc:
-            print(f"[warn] {cname}: analyze failed: {exc}", file=sys.stderr)
-            significant, summary, event = True, None, ""  # fail open
+            raise ArkError(f"{cname}: analysis failed; refusing to publish an incomplete digest: {exc}") from None
         if not significant or not summary:
             return cname, None  # drop non-substantive or empty-summary items
         it["summary"] = summary
@@ -503,10 +463,26 @@ def main():
 
     item_tasks = [(c["name"], it) for c in companies for it in merged[c["name"]]]
     results = {c["name"]: [] for c in companies}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as pool:
-        for cname, it in pool.map(process, item_tasks):
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    raw_path = os.path.join(OUTPUT_DIR, "raw-candidates.json")
+    def save_raw():
+        with open(raw_path, "w", encoding="utf-8") as fh:
+            json.dump({"fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                       "companies": merged}, fh, ensure_ascii=False, indent=2)
+    save_raw()
+    if not item_tasks:
+        raise RuntimeError("No RSS candidates fetched; refusing to overwrite the existing digest")
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=concurrency)
+    futures = [pool.submit(process, task) for task in item_tasks]
+    try:
+        # Consume in input order to preserve English-first selection.
+        for future in futures:
+            cname, it = future.result()
             if it is not None:
                 results[cname].append(it)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+        save_raw()
 
     # De-duplicate same-event coverage within a company (English-first
     # order is preserved, so the original English report is kept).
@@ -554,11 +530,18 @@ def main():
         name = c["name"]
         print(f"[ok] {name}: {len(results[name])} kept (from {len(merged[name])} merged)")
 
+    if os.environ.get("DRY_RUN", "false").lower() == "true":
+        preview = os.path.join(OUTPUT_DIR, "digest-preview.md")
+        with open(preview, "w", encoding="utf-8") as fh:
+            fh.write(build_markdown(datetime.date.today().isoformat(), results, summarized=True))
+        print(f"DRY RUN: wrote {preview}; no publication")
+        return 0
+
     date_str = datetime.date.today().isoformat()
     os.makedirs(NEWS_DIR, exist_ok=True)
     out_path = os.path.join(NEWS_DIR, f"{date_str}.md")
     with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(build_markdown(date_str, results, summarized=bool(DEEPSEEK_API_KEY)))
+        fh.write(build_markdown(date_str, results, summarized=True))
     print(f"Wrote {out_path}")
 
     if config.get("create_issue", True) and sum(len(v) for v in results.values()):
@@ -575,7 +558,7 @@ def main():
                 config.get("issue_assignees"),
             )
         except Exception as exc:
-            print(f"[warn] issue creation failed: {exc}", file=sys.stderr)
+            raise RuntimeError(f"Issue delivery failed: {exc}") from None
 
     return 0
 
