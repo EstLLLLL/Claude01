@@ -59,7 +59,7 @@ class ArkClientTests(unittest.TestCase):
 
     def test_malformed_and_truncated_responses_fail(self):
         for content, finish in [("not json", "stop"), ("[]", "stop"), ('{"ok": true}', "length")]:
-            with patch("ark_client.urllib.request.urlopen", return_value=response(content, finish)):
+            with patch("ark_client.urllib.request.urlopen", side_effect=lambda *a, **k: response(content, finish)), patch("ark_client.time.sleep"):
                 with self.assertRaises(ark_client.ArkError):
                     ark_client.chat_json([])
 
@@ -67,3 +67,15 @@ class ArkClientTests(unittest.TestCase):
         with patch.dict(os.environ, {"ARK_API_KEY": "", "DEEPSEEK_API_KEY": "old-key"}):
             with self.assertRaises(ark_client.ArkError):
                 ark_client.settings()
+
+    def test_invalid_json_can_recover_without_accepting_partial_content(self):
+        with patch("ark_client.urllib.request.urlopen", side_effect=[response('not json'), response('{"ok": true}')]) as call, patch("ark_client.time.sleep"):
+            self.assertEqual(ark_client.chat_json([]), {"ok": True})
+        self.assertEqual(call.call_count, 2)
+
+    def test_content_filter_is_distinct_and_never_retried(self):
+        with patch("ark_client.urllib.request.urlopen", return_value=response('Cannot answer', 'content_filter')) as call, patch("ark_client.time.sleep") as sleep:
+            with self.assertRaises(ark_client.ArkContentFiltered):
+                ark_client.chat_json([])
+        self.assertEqual(call.call_count, 1)
+        sleep.assert_not_called()

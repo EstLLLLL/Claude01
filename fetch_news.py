@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
-from ark_client import ArkError, chat_json, settings
+from ark_client import ArkContentFiltered, ArkError, chat_json, settings
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(ROOT, "config.json")
@@ -262,7 +262,7 @@ def deepseek_analyze(title, article_text, summary_language):
     return obj["significant"], summary or None, obj.get("event", "").strip()
 
 
-def build_markdown(date_str, results, summarized):
+def build_markdown(date_str, results, summarized, unanalysed=None):
     lines = [f"# AI Company News - {date_str}", ""]
     total = sum(len(v) for v in results.values())
     note = f"with Ark DeepSeek summaries ({settings()[1]})" if summarized else "no summaries"
@@ -287,6 +287,11 @@ def build_markdown(date_str, results, summarized):
             elif summarized:
                 lines.append("   - 摘要：（生成失败）")
         lines.append("")
+    if unanalysed:
+        lines.extend(["## 模型未处理的候选", "",
+                      "以下候选被 Ark 内容过滤，未生成摘要，也未判断新闻重要性；保留原文供核查。", ""])
+        for item in unanalysed:
+            lines.append(f"- [{item['title']}]({item['link']})")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -453,8 +458,17 @@ def main():
             significant, summary, event = deepseek_analyze(
                 it["title"], article_text, summary_language
             )
+        except ArkContentFiltered as exc:
+            it["analysis_status"] = "content_filtered"
+            it["analysis_error"] = str(exc)
+            print(f"[warn] {cname}: Ark content_filter; candidate retained without summary", file=sys.stderr)
+            return cname, None
         except Exception as exc:
+            it["analysis_status"] = "error"
+            it["analysis_error"] = str(exc)
             raise ArkError(f"{cname}: analysis failed; refusing to publish an incomplete digest: {exc}") from None
+        it["analysis_status"] = "completed"
+        it["significant"] = significant
         if not significant or not summary:
             return cname, None  # drop non-substantive or empty-summary items
         it["summary"] = summary
@@ -483,6 +497,10 @@ def main():
     finally:
         pool.shutdown(wait=True, cancel_futures=True)
         save_raw()
+
+    unanalysed = [it for items in merged.values() for it in items
+                  if it.get("analysis_status") == "content_filtered"]
+    print(f"Ark content-filtered candidates retained for review: {len(unanalysed)}")
 
     # De-duplicate same-event coverage within a company (English-first
     # order is preserved, so the original English report is kept).
@@ -533,7 +551,7 @@ def main():
     if os.environ.get("DRY_RUN", "false").lower() == "true":
         preview = os.path.join(OUTPUT_DIR, "digest-preview.md")
         with open(preview, "w", encoding="utf-8") as fh:
-            fh.write(build_markdown(datetime.date.today().isoformat(), results, summarized=True))
+            fh.write(build_markdown(datetime.date.today().isoformat(), results, summarized=True, unanalysed=unanalysed))
         print(f"DRY RUN: wrote {preview}; no publication")
         return 0
 
@@ -541,7 +559,7 @@ def main():
     os.makedirs(NEWS_DIR, exist_ok=True)
     out_path = os.path.join(NEWS_DIR, f"{date_str}.md")
     with open(out_path, "w", encoding="utf-8") as fh:
-        fh.write(build_markdown(date_str, results, summarized=True))
+        fh.write(build_markdown(date_str, results, summarized=True, unanalysed=unanalysed))
     print(f"Wrote {out_path}")
 
     if config.get("create_issue", True) and sum(len(v) for v in results.values()):
@@ -552,6 +570,8 @@ def main():
                 os.environ.get("GITHUB_REPOSITORY", ""),
                 int(config.get("issue_items_per_brand", 5)),
             )
+            if unanalysed:
+                body += f"\n另有 {len(unanalysed)} 条候选被 Ark 内容过滤，原文链接保留在完整日报的‘模型未处理的候选’中。\n"
             create_github_issue(
                 f"AI 公司新闻日报 · {date_str}",
                 body,

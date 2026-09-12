@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 import fetch_news as news
-from ark_client import ArkError
+from ark_client import ArkContentFiltered, ArkError
 
 ENV = {"ARK_API_KEY": "fake", "ARK_MODEL": "deepseek-v4-pro-ga-260813",
        "ARK_BASE_URL": "https://ark.cn-beijing.volces.com/api/v3", "DRY_RUN": "false"}
@@ -14,8 +14,8 @@ CONFIG = {"brands": ["OpenAI"], "locales": [{"language": "en-US", "country": "US
 ITEM = {"title": "OpenAI publishes research", "link": "https://openai.com/research", "source": "OpenAI", "pub_date": "today"}
 
 class NewsPipelineTests(unittest.TestCase):
-    def run_pipeline(self, folder, analyze):
-        with patch.dict(os.environ, ENV), patch.object(news, "NEWS_DIR", str(folder / "news")), patch.object(news, "OUTPUT_DIR", str(folder / "output")), patch.object(news, "load_config", return_value=CONFIG), patch.object(news, "fetch_feed", return_value=b"unused"), patch.object(news, "parse_items", side_effect=lambda *a: [ITEM.copy()]), patch.object(news, "fetch_article_text", return_value="Public article text"), patch.object(news, "deepseek_analyze", side_effect=analyze), patch.object(news, "create_github_issue") as deliver:
+    def run_pipeline(self, folder, analyze, dry_run="false"):
+        with patch.dict(os.environ, {**ENV, "DRY_RUN": dry_run}), patch.object(news, "NEWS_DIR", str(folder / "news")), patch.object(news, "OUTPUT_DIR", str(folder / "output")), patch.object(news, "load_config", return_value=CONFIG), patch.object(news, "fetch_feed", return_value=b"unused"), patch.object(news, "parse_items", side_effect=lambda *a: [ITEM.copy()]), patch.object(news, "fetch_article_text", return_value="Public article text"), patch.object(news, "deepseek_analyze", side_effect=analyze), patch.object(news, "create_github_issue") as deliver:
             try:
                 news.main()
             finally:
@@ -41,3 +41,14 @@ class NewsPipelineTests(unittest.TestCase):
         with patch.object(news, "chat_json", return_value={"significant": True, "summary": "", "event": "event"}):
             with self.assertRaises(ArkError):
                 news.deepseek_analyze("Title", "Body", "Chinese")
+
+    def test_content_filtered_candidate_is_retained_and_disclosed_in_preview(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            self.run_pipeline(folder, ArkContentFiltered("Ark content_filter"), dry_run="true")
+            raw = json.loads((folder / "output/raw-candidates.json").read_text())
+            self.assertEqual(raw["companies"]["OpenAI"][0]["analysis_status"], "content_filtered")
+            preview = (folder / "output/digest-preview.md").read_text()
+            self.assertIn("模型未处理的候选", preview)
+            self.assertIn(ITEM["link"], preview)
+            self.assertFalse((folder / "news").exists())

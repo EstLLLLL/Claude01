@@ -53,3 +53,8 @@ The workflow retains its existing three daily scheduling slots. Manual
 `dry_run=true` creates an artifact preview without committing a digest or
 creating a GitHub Issue. Runs are serialized to prevent concurrent writes.
 Regression tests run for code changes and before each daily job.
+
+Explicit Ark content-filter refusals are not quality judgments. Such candidates
+remain in the raw artifact and appear under the digest’s "模型未处理的候选"
+section with their original links. They are never retried to bypass filtering.
+Malformed JSON may be retried; exhausted errors still fail publication.

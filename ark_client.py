@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -12,6 +13,10 @@ DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 class ArkError(RuntimeError):
     pass
+
+
+class ArkContentFiltered(ArkError):
+    """The provider explicitly declined this content; it was not evaluated."""
 
 
 def settings():
@@ -46,10 +51,12 @@ def chat_json(messages, *, temperature=0.2, max_tokens=1600):
             with urllib.request.urlopen(request, timeout=90) as response:
                 data = json.load(response)
             choice = data["choices"][0]
+            if choice.get("finish_reason") == "content_filter" or choice["message"].get("refusal"):
+                raise ArkContentFiltered("Ark content_filter: model declined to process this candidate")
             if choice.get("finish_reason") == "length":
                 raise ArkError("Ark response was truncated; refusing incomplete JSON")
             content = choice["message"]["content"]
-            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip())
+            cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", content.strip(), flags=re.IGNORECASE)
             result = json.loads(cleaned)
             if not isinstance(result, dict):
                 raise ArkError("Ark response must be a JSON object")
@@ -73,7 +80,9 @@ def chat_json(messages, *, temperature=0.2, max_tokens=1600):
             if attempt == 2:
                 raise ArkError(f"Ark network error ({type(exc).__name__}); retries exhausted") from None
         except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-            raise ArkError("Ark returned invalid JSON or an invalid chat response") from None
+            if attempt == 2:
+                raise ArkError("Ark returned invalid JSON/chat response; retries exhausted") from None
+            logging.getLogger(__name__).warning("Ark returned invalid JSON; retrying (%s/3)", attempt + 1)
         time.sleep(2 ** attempt)
 
 
